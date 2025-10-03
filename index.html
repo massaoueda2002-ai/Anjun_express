@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Check-in do Evento • QR Code</title>
+  <style>
+    :root{
+      --bg:#0f172a;--card:#111827;--fg:#e5e7eb;--muted:#94a3b8;
+      --ok:#22c55e;--warn:#f59e0b;--err:#ef4444;
+    }
+    body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    .container{max-width:840px;margin:auto;padding:16px}
+    .card{background:var(--card);border:1px solid #1f2937;border-radius:16px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .tabs{display:flex;gap:8px;flex-wrap:wrap}
+    .tab{padding:10px 14px;border-radius:999px;border:1px solid #334155;cursor:pointer;color:var(--muted)}
+    .tab.active{color:var(--fg);border-color:#64748b;background:#0b1220}
+    .grid{display:grid;gap:12px}
+    @media(min-width:700px){.grid2{grid-template-columns:1fr 1fr}}
+    label{font-size:12px;color:var(--muted)}
+    input,select{width:100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0b1220;color:var(--fg)}
+    button{cursor:pointer;border:none;border-radius:12px;padding:12px 16px;background:#2563eb;color:white;font-weight:600}
+    .muted{color:var(--muted)}
+    .status{font-weight:700}
+    .status.ok{color:var(--ok)}
+    .status.warn{color:var(--warn)}
+    .status.err{color:var(--err)}
+    .qrbox{display:flex;justify-content:center;align-items:center;padding:16px;border:1px dashed #334155;border-radius:12px}
+    .small{font-size:12px}
+  </style>
+  <!-- Bibliotecas: scanner e gerador de QR -->
+  <script src="https://unpkg.com/html5-qrcode" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
+</head>
+<body>
+  <div class="container">
+    <h1>Check-in do Evento</h1>
+    <p class="muted">Valide QR Codes pela câmera ou cadastre convidados manualmente. 100% via Google Sheets.</p>
+
+    <div class="tabs" id="tabs">
+      <div class="tab active" data-tab="scan">Validar entrada</div>
+      <div class="tab" data-tab="cadastro">Cadastro manual</div>
+      <div class="tab" data-tab="meuqr">Meu QR</div>
+    </div>
+
+    <!-- Validação -->
+    <div id="view-scan" class="card" style="margin-top:12px">
+      <div class="grid">
+        <div id="scanner" style="width:100%"></div>
+        <div>
+          <button id="btnStart">Iniciar câmera</button>
+          <button id="btnStop" style="background:#475569">Parar</button>
+          <p class="small muted">Dica: se houver mais de uma câmera, o navegador perguntará qual usar.</p>
+          <div id="scanResult" class="status"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cadastro manual -->
+    <div id="view-cadastro" class="card" style="display:none;margin-top:12px">
+      <form id="formCadastro" class="grid grid2">
+        <div><label>Nome*</label><input name="nome" required></div>
+        <div><label>Fornecedor*</label><input name="fornecedor" required></div>
+        <div><label>Telefone/WhatsApp*</label><input name="telefone" required></div>
+        <div><label>Email*</label><input type="email" name="email" required></div>
+        <div><label>UF*</label><input name="uf" maxlength="2" required></div>
+        <div><label>Estado*</label><input name="estado" required></div>
+        <div><label>Cidade*</label><input name="cidade" required></div>
+        <div><label>CPF*</label><input name="cpf" required></div>
+        <div><label>RG*</label><input name="rg" required></div>
+        <div><label>Placa (opcional)</label><input name="placa" placeholder="ABC1D23"></div>
+        <div style="grid-column:1/-1">
+          <button type="submit">Gerar QR e salvar</button>
+          <span id="cadStatus" class="status"></span>
+        </div>
+      </form>
+      <div id="qrGeradoWrap" style="display:none;margin-top:12px">
+        <div class="qrbox"><div id="qrGerado"></div></div>
+        <p class="small">Compartilhe o link com o convidado:</p>
+        <input id="shareLink" readonly>
+        <button id="btnCopy" style="margin-top:8px;background:#16a34a">Copiar link</button>
+      </div>
+    </div>
+
+    <!-- Página do convidado -->
+    <div id="view-meuqr" class="card" style="display:none;margin-top:12px">
+      <p class="muted small">Se você recebeu um link, seu QR aparecerá abaixo.</p>
+      <div class="qrbox"><div id="qrMeu"></div></div>
+      <p id="qrMeuText" class="small muted"></p>
+    </div>
+  </div>
+
+<script>
+/* ===================== CONFIG ===================== */
+const GAS_URL = 'COLE_AQUI_A_URL_DO_WEB_APP'; // <— TROCAR
+
+/* ===================== Tabs ===================== */
+const tabs = document.querySelectorAll('.tab');
+const views = { scan: 'view-scan', cadastro: 'view-cadastro', meuqr: 'view-meuqr' };
+tabs.forEach(t => t.addEventListener('click', () => {
+  tabs.forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  const target = t.dataset.tab;
+  Object.values(views).forEach(id => document.getElementById(id).style.display = 'none');
+  document.getElementById(views[target]).style.display = 'block';
+}));
+
+/* ===================== Scanner ===================== */
+let html5QrCode;
+let scanning = false;
+const btnStart = document.getElementById('btnStart');
+const btnStop  = document.getElementById('btnStop');
+const scanResult = document.getElementById('scanResult');
+
+btnStart.addEventListener('click', async () => {
+  try {
+    scanResult.textContent = '';
+    if (!html5QrCode) html5QrCode = new Html5Qrcode('scanner');
+    const devices = await Html5Qrcode.getCameras();
+    const camId = devices?.[0]?.id;
+    if (!camId) throw new Error('Nenhuma câmera encontrada');
+    await html5QrCode.start(
+      camId,
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      onScan,
+      () => {} // silencioso
+    );
+    scanning = true;
+  } catch (err) {
+    scanResult.textContent = 'Erro câmera: ' + err.message;
+    scanResult.className = 'status err';
+  }
+});
+
+btnStop.addEventListener('click', async () => {
+  if (html5QrCode && scanning) {
+    await html5QrCode.stop();
+    scanning = false;
+  }
+});
+
+async function onScan(decodedText) {
+  if (!decodedText) return;
+  await validateCode(decodedText.trim()); // QR contém apenas o qr_id
+  if (html5QrCode && scanning) {
+    await html5QrCode.stop();
+    scanning = false;
+  }
+}
+
+async function validateCode(qrId) {
+  try {
+    scanResult.textContent = 'Validando...';
+    scanResult.className = 'status';
+    const res = await fetch(GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'validate',
+        qr_id: qrId,
+        validador_info: navigator.userAgent
+      })
+    });
+    const json = await res.json();
+    if (json.status === 'OK') {
+      scanResult.textContent = `✔ Entrada liberada para: ${json.nome || ''}`;
+      scanResult.className = 'status ok';
+    } else if (json.status === 'JA_USADO') {
+      scanResult.textContent = `⚠ QR já utilizado para: ${json.nome || ''}`;
+      scanResult.className = 'status warn';
+    } else if (json.status === 'NAO_AUTORIZADO') {
+      scanResult.textContent = '✖ QR não autorizado';
+      scanResult.className = 'status err';
+    } else {
+      scanResult.textContent = '✖ Resposta inesperada';
+      scanResult.className = 'status err';
+    }
+  } catch (e) {
+    scanResult.textContent = 'Erro de rede/API: ' + e.message;
+    scanResult.className = 'status err';
+  }
+}
+
+/* ===================== Cadastro manual ===================== */
+const form      = document.getElementById('formCadastro');
+const cadStatus = document.getElementById('cadStatus');
+const qrWrap    = document.getElementById('qrGeradoWrap');
+const qrDiv     = document.getElementById('qrGerado');
+const shareLink = document.getElementById('shareLink');
+const btnCopy   = document.getElementById('btnCopy');
+
+form.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  cadStatus.textContent = 'Salvando...';
+  cadStatus.className = 'status';
+  const data = Object.fromEntries(new FormData(form).entries());
+  try {
+    const res = await fetch(GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'register', ...data })
+    });
+    const json = await res.json();
+    if (json.status === 'CRIADO') {
+      cadStatus.textContent = 'Convidado cadastrado com sucesso!';
+      cadStatus.className = 'status ok';
+      const id = json.qr_id;
+      qrWrap.style.display = 'block';
+      qrDiv.innerHTML = '';
+      new QRCode(qrDiv, { text: id, width: 220, height: 220 });
+      const link = location.origin + location.pathname + '#guest=' + encodeURIComponent(id);
+      shareLink.value = link;
+    } else {
+      cadStatus.textContent = 'Erro: ' + (json.error || 'não foi possível cadastrar');
+      cadStatus.className = 'status err';
+    }
+  } catch (e) {
+    cadStatus.textContent = 'Erro de rede/API: ' + e.message;
+    cadStatus.className = 'status err';
+  }
+});
+
+btnCopy.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(shareLink.value);
+    btnCopy.textContent = 'Copiado!';
+    setTimeout(() => btnCopy.textContent = 'Copiar link', 1200);
+  } catch {}
+});
+
+/* ===================== Meu QR (página do convidado) ===================== */
+function renderMeuQR() {
+  const hash = location.hash || '';
+  const m = hash.match(/guest=([^&]+)/);
+  const id = m ? decodeURIComponent(m[1]) : '';
+  if (!id) return;
+  document.querySelector('[data-tab="meuqr"]').click();
+  const el = document.getElementById('qrMeu');
+  el.innerHTML = '';
+  new QRCode(el, { text: id, width: 220, height: 220 });
+  document.getElementById('qrMeuText').textContent = 'Apresente este QR no acesso. (ID: ' + id + ')';
+}
+window.addEventListener('hashchange', renderMeuQR);
+renderMeuQR();
+</script>
+</body>
+</html>
