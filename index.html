@@ -9,6 +9,7 @@
       --bg:#0f172a;--card:#111827;--fg:#e5e7eb;--muted:#94a3b8;
       --ok:#22c55e;--warn:#f59e0b;--err:#ef4444;
     }
+    *{box-sizing:border-box}
     body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     .container{max-width:840px;margin:auto;padding:16px}
     .card{background:var(--card);border:1px solid #1f2937;border-radius:16px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
@@ -20,8 +21,10 @@
     label{font-size:12px;color:var(--muted)}
     input,select{width:100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0b1220;color:var(--fg)}
     button{cursor:pointer;border:none;border-radius:12px;padding:12px 16px;background:#2563eb;color:white;font-weight:600}
+    .btn-secondary{background:#475569}
+    .btn-tertiary{background:#334155}
     .muted{color:var(--muted)}
-    .status{font-weight:700}
+    .status{font-weight:700;margin-top:8px}
     .status.ok{color:var(--ok)}
     .status.warn{color:var(--warn)}
     .status.err{color:var(--err)}
@@ -48,9 +51,12 @@
       <div class="grid">
         <div id="scanner" style="width:100%"></div>
         <div>
-          <button id="btnStart">Iniciar câmera</button>
-          <button id="btnStop" style="background:#475569">Parar</button>
-          <p class="small muted">Dica: se houver mais de uma câmera, o navegador perguntará qual usar.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button id="btnStart">Iniciar câmera</button>
+            <button id="btnSwitch" class="btn-tertiary">Trocar câmera</button>
+            <button id="btnStop" class="btn-secondary">Parar</button>
+          </div>
+          <p class="small muted">O site tenta abrir a <b>câmera traseira</b>. Use “Trocar câmera” se necessário.</p>
           <div id="scanResult" class="status"></div>
         </div>
       </div>
@@ -92,7 +98,8 @@
 
 <script>
 /* ===================== CONFIG ===================== */
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbzsJPDGwc66P6sSiq3K0-AcLCf81py136E7_qFrA3_WKY-4kPYkpr8BBsOtklOnX9Le/exec'; // <— TROCAR
+/* TROQUE pela URL do seu Web App do Apps Script (ou mantenha se já for a sua) */
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbzsJPDGwc66P6sSiq3K0-AcLCf81py136E7_qFrA3_WKY-4kPYkpr8BBsOtklOnX9Le/exec';
 
 /* ===================== Tabs ===================== */
 const tabs = document.querySelectorAll('.tab');
@@ -105,49 +112,91 @@ tabs.forEach(t => t.addEventListener('click', () => {
   document.getElementById(views[target]).style.display = 'block';
 }));
 
-/* ===================== Scanner ===================== */
+/* ===================== Scanner (traseira por padrão + trocar) ===================== */
 let html5QrCode;
 let scanning = false;
-const btnStart = document.getElementById('btnStart');
-const btnStop  = document.getElementById('btnStop');
+let devicesList = [];
+let currentCamIndex = 0;
+
+const btnStart   = document.getElementById('btnStart');
+const btnStop    = document.getElementById('btnStop');
+const btnSwitch  = document.getElementById('btnSwitch');
 const scanResult = document.getElementById('scanResult');
+
+async function ensureDevices() {
+  if (!devicesList.length) {
+    devicesList = await Html5Qrcode.getCameras();
+  }
+}
+
+async function startWithDeviceId(deviceId) {
+  if (!html5QrCode) html5QrCode = new Html5Qrcode('scanner');
+  await html5QrCode.start(
+    deviceId,
+    { fps: 10, qrbox: { width: 250, height: 250 } },
+    onScan,
+    () => {} // silencioso
+  );
+  scanning = true;
+}
 
 btnStart.addEventListener('click', async () => {
   try {
     scanResult.textContent = '';
-    if (!html5QrCode) html5QrCode = new Html5Qrcode('scanner');
-    const devices = await Html5Qrcode.getCameras();
-    const camId = devices?.[0]?.id;
-    if (!camId) throw new Error('Nenhuma câmera encontrada');
-    await html5QrCode.start(
-      camId,
-      { fps: 10, qrbox: { width: 250, height: 250 } },
-      onScan,
-      () => {} // silencioso
-    );
-    scanning = true;
+    // 1) tenta abrir pela câmera traseira via facingMode
+    try {
+      if (!html5QrCode) html5QrCode = new Html5Qrcode('scanner');
+      await html5QrCode.start(
+        { facingMode: { exact: "environment" } },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        onScan,
+        () => {}
+      );
+      scanning = true;
+      // atualiza lista/índice para suportar "Trocar"
+      if (!devicesList.length) devicesList = await Html5Qrcode.getCameras();
+      const backIdx = devicesList.findIndex(d => /back|rear|traseira|environment/i.test(d.label));
+      currentCamIndex = backIdx >= 0 ? backIdx : 0;
+    } catch (errFacing) {
+      // 2) Fallback: escolhe dispositivo que pareça traseiro, senão o último
+      await ensureDevices();
+      if (!devicesList.length) throw new Error('Nenhuma câmera encontrada');
+      const preferred = devicesList.find(d => /back|rear|traseira|environment/i.test(d.label))
+                      || devicesList[devicesList.length - 1]
+                      || devicesList[0];
+      currentCamIndex = Math.max(0, devicesList.indexOf(preferred));
+      await startWithDeviceId(preferred.id);
+    }
   } catch (err) {
     scanResult.textContent = 'Erro câmera: ' + err.message;
     scanResult.className = 'status err';
   }
 });
 
-btnStop.addEventListener('click', async () => {
-  if (html5QrCode && scanning) {
-    await html5QrCode.stop();
-    scanning = false;
+btnSwitch.addEventListener('click', async () => {
+  try {
+    await ensureDevices();
+    if (!devicesList.length) throw new Error('Nenhuma câmera encontrada');
+    if (html5QrCode && scanning) { await html5QrCode.stop(); scanning = false; }
+    currentCamIndex = (currentCamIndex + 1) % devicesList.length;
+    await startWithDeviceId(devicesList[currentCamIndex].id);
+  } catch (err) {
+    scanResult.textContent = 'Não foi possível trocar a câmera: ' + err.message;
+    scanResult.className = 'status err';
   }
+});
+
+btnStop.addEventListener('click', async () => {
+  if (html5QrCode && scanning) { await html5QrCode.stop(); scanning = false; }
 });
 
 async function onScan(decodedText) {
   if (!decodedText) return;
   await validateCode(decodedText.trim()); // QR contém apenas o qr_id
-  if (html5QrCode && scanning) {
-    await html5QrCode.stop();
-    scanning = false;
-  }
+  if (html5QrCode && scanning) { await html5QrCode.stop(); scanning = false; }
 }
 
+/* ===================== Validação via API ===================== */
 async function validateCode(qrId) {
   try {
     scanResult.textContent = 'Validando...';
@@ -155,11 +204,7 @@ async function validateCode(qrId) {
     const res = await fetch(GAS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'validate',
-        qr_id: qrId,
-        validador_info: navigator.userAgent
-      })
+      body: JSON.stringify({ action: 'validate', qr_id: qrId, validador_info: navigator.userAgent })
     });
     const json = await res.json();
     if (json.status === 'OK') {
@@ -245,4 +290,3 @@ renderMeuQR();
 </script>
 </body>
 </html>
-
